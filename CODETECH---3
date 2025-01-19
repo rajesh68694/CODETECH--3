@@ -1,0 +1,132 @@
+import tensorflow as tf
+import numpy as np
+import matplotlib.pyplot as plt
+from PIL import Image
+import time
+def loadimage(imagepath, maxdim=512):
+    img = Image.open(imagepath)
+    img = img.convert('RGB')
+    img = np.array(img)
+    long = max(img.shape[0], img.shape[1])
+    scale = maxdim / long
+    newshape = np.array(img.shape) * scale
+    newshape = newshape.round().astype(int)
+    img = Image.fromarray(img)
+    img = img.resize((newshape[1], newshape[0]), Image.ANTIALIAS)
+    img = np.array(img)
+    img = np.expanddims(img, axis=0)
+    img = tf.image.convertimagedtype(img, dtype=tf.float32)
+    return img
+def loadvgg19():
+    vgg19 = tf.keras.applications.VGG19(includetop=False, weights='imagenet')
+    vgg19.trainable = False
+    return vgg19
+
+def getcontentstylelayers():
+    contentlayers = ['block5conv2']  
+    stylelayers = [
+        'block1conv1', 'block2_conv1', 'block3_conv1', 
+        'block4conv1', 'block5_conv1'
+    ] 
+    return content_layers, style_layers
+
+def getfeatures(model, layers, img):
+    outputs = [model.get_layer(layer).output for layer in layers]
+    featuremodel = tf.keras.models.Model(inputs=model.input, outputs=outputs)
+    features = featuremodel(img)
+    return features
+
+def grammatrix(tensor):
+    channels = tensor.shape[-1]
+    a = tf.reshape(tensor, [-1, channels])
+    gram = tf.matmul(a, a, transposea=True)
+    return gram / tf.cast(tf.shape(tensor)[0], tf.float32)
+
+def computestyleloss(style_features, targetfeatures):
+    loss = 0
+    for sf, tf in zip(stylefeatures, targetfeatures):
+        grams = grammatrix(sf)
+        gramt = grammatrix(tf)
+        loss += tf.reducemean(tf.square(grams - gramt))
+    return loss
+
+def computecontentloss(contentfeatures, targetfeatures):
+    loss = tf.reducemean(tf.square(contentfeatures - targetfeatures))
+    return loss
+
+def total_variation_loss(image):
+    x_var = image[:, :-1, :-1, :] - image[:, 1:, :-1, :]
+    y_var = image[:, :-1, :-1, :] - image[:, :-1, 1:, :]
+    return tf.reducemean(tf.square(xvar)) + tf.reducemean(tf.square(yvar))
+
+def computeloss(model, contentlayers, stylelayers, contentimg, styleimg, generatedimg):
+    contentfeatures = getfeatures(model, contentlayers, contentimg)
+    stylefeatures = getfeatures(model, stylelayers, styleimg)
+    generatedfeatures = getfeatures(model, contentlayers + stylelayers, generatedimg)
+
+    contentloss = computecontentloss(contentfeatures[0], generatedfeatures[0])
+    styleloss = computestyleloss(stylefeatures, generatedfeatures[1:])
+    tvloss = totalvariationloss(generatedimg)
+
+    # Total loss (Weighted combination of all losses)
+    totalloss = 0.025 * contentloss + 1.0 * styleloss + 0.1 * tvloss
+    return totalloss, contentloss, styleloss, tvloss
+
+# Gradient descent step
+@tf.function()
+def train_step(model, contentlayers, stylelayers, contentimg, styleimg, generatedimg, optimizer):
+    with tf.GradientTape() as tape:
+        totalloss, contentloss, styleloss, tvloss = computeloss(
+            model, contentlayers, stylelayers, contentimg, styleimg, generatedimg
+        )
+    grads = tape.gradient(totalloss, generatedimg)
+    optimizer.applygradients([(grads, generatedimg)])
+    return totalloss, contentloss, styleloss, tvloss
+
+# Main function for neural style transfer
+def neuralstyletransfer(contentimagepath, styleimagepath, outputimagepath, numiterations=1000):
+    # Load images
+    contentimg = loadimage(contentimagepath)
+    styleimg = loadimage(styleimagepath)
+
+    # Load VGG19 model
+    vggmodel = loadvgg19()
+
+    # Define content and style layers
+    contentlayers, stylelayers = getcontentstylelayers()
+
+    # Initialize the generated image as the content image
+    generatedimg = tf.Variable(contentimg)
+
+    # Set up optimizer
+    optimizer = tf.optimizers.Adam(learningrate=0.02)
+
+    # Train the model (optimization loop)
+    for i in range(numiterations):
+        totalloss, contentloss, styleloss, tvloss = trainstep(
+            vggmodel, contentlayers, stylelayers, contentimg, styleimg, generatedimg, optimizer
+        )
+
+        if i % 100 == 0:
+            print(f"Iteration {i}/{num_iterations} - "
+                  f"Total Loss: {totalloss:.2f} Content Loss: {contentloss:.2f} "
+                  f"Style Loss: {styleloss:.2f} TV Loss: {tvloss:.2f}")
+
+            # Display the current generated image
+            plt.imshow(generatedimg.numpy()[0])
+            plt.axis('off')
+            plt.show()
+
+    # Save the generated image
+    resultimage = np.array(generatedimg.numpy()[0] * 255, dtype=np.uint8)
+    resultimage = Image.fromarray(resultimage)
+    resultimage.save(outputimagepath)
+
+    print(f"Style transfer completed. Output saved to {output_image_path}")
+
+# Example usage:
+content_image_path = 'pathtoyourcontentimage.jpg'
+styleimage_path = 'pathtoyourstyleimage.jpg'
+outputimagepath = 'outputimage.jpg'
+
+neuralstyletransfer(contentimagepath, styleimagepath, outputimagepath)
